@@ -1,0 +1,20 @@
+[Unit]
+Description=Quant Dashboard API (uvicorn :9001)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=administrator
+WorkingDirectory=/home/administrator/workspace/quant_dashboard/backend
+ExecStart=/usr/bin/python3 -m uvicorn app:app \
+    --host 0.0.0.0 \
+    --port 9001 \
+    --log-level warning
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/home/administrator/quant_stock/dashboard.log
+StandardError=append:/home/administrator/quant_stock/dashboard.log
+
+[Install]
+WantedBy=multi-user.target
