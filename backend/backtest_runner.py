@@ -26,6 +26,10 @@ def _build_env() -> dict:
 _job: Optional["BtJob"] = None
 
 
+import re as _re
+_BT_ID_RE = _re.compile(r"回测已启动[：:]\s*([0-9a-f]{32,})", _re.IGNORECASE)
+
+
 class BtJob:
     def __init__(self, days: int):
         self.days = days
@@ -33,6 +37,7 @@ class BtJob:
         self.status = "running"   # running | done | error
         self.lines: list = []
         self.returncode: Optional[int] = None
+        self.qc_backtest_id: Optional[str] = None
 
     def as_dict(self) -> dict:
         return {
@@ -41,6 +46,7 @@ class BtJob:
             "elapsed": int(time.time() - self.started_at),
             "lines": self.lines[-200:],
             "returncode": self.returncode,
+            "qc_backtest_id": self.qc_backtest_id,
         }
 
 
@@ -56,6 +62,10 @@ async def _run(job: BtJob) -> None:
         async for raw in proc.stdout:
             line = raw.decode("utf-8", errors="replace").rstrip()
             job.lines.append(line)
+            if job.qc_backtest_id is None:
+                m = _BT_ID_RE.search(line)
+                if m:
+                    job.qc_backtest_id = m.group(1)
         await proc.wait()
         job.returncode = proc.returncode
         job.status = "done" if proc.returncode == 0 else "error"

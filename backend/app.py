@@ -16,6 +16,7 @@ import code_mgr
 import signal_monitor
 import backtest_runner
 import equity_tracker
+import cloud_backtest
 
 # ── IP 白名单 ─────────────────────────────────────────────────────────────────
 ALLOWED_NETWORKS = [
@@ -46,7 +47,7 @@ app.add_middleware(
         "http://localhost:9001",
         "http://192.168.100.168:9001",
     ],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -265,6 +266,30 @@ async def run_backtest(days: int = Query(365, ge=backtest_runner.MIN_DAYS, le=ba
 @app.get("/api/backtest/job")
 def backtest_job():
     return backtest_runner.get_status()
+
+
+# ── cloud backtest management (test project 30796820) ────────────────────────
+
+@app.get("/api/cloud/backtests")
+async def cloud_list(force: bool = Query(False)):
+    items = await cloud_backtest.list_backtests(force=force)
+    return {"items": items, "total": len(items)}
+
+
+@app.get("/api/cloud/backtests/{bt_id}")
+async def cloud_detail(bt_id: str, force: bool = Query(False)):
+    result = await cloud_backtest.get_detail(bt_id, force=force)
+    if "error" in result:
+        raise HTTPException(status_code=502, detail=result["error"])
+    return result
+
+
+@app.delete("/api/cloud/backtests/{bt_id}")
+async def cloud_delete(bt_id: str):
+    result = await cloud_backtest.delete_backtest(bt_id)
+    if not result.get("success"):
+        raise HTTPException(status_code=502, detail=result.get("error", "delete failed"))
+    return result
 
 
 # ── static frontend ───────────────────────────────────────────────────────────
