@@ -15,6 +15,7 @@ import infra
 import code_mgr
 import signal_monitor
 import backtest_runner
+import equity_tracker
 
 # ── IP 白名单 ─────────────────────────────────────────────────────────────────
 ALLOWED_NETWORKS = [
@@ -188,7 +189,15 @@ async def live_objectstore():
 
 @app.get("/api/live/structured")
 async def live_structured():
-    return await live_bridge.run_live_structured()
+    result = await live_bridge.run_live_structured()
+    equity_tracker.append(result.get("runtime_stats", {}).get("Equity", ""))
+    return result
+
+
+@app.get("/api/live/equity_history")
+def live_equity_history():
+    points = equity_tracker.load()
+    return {"points": points, "count": len(points)}
 
 
 # ── infrastructure ────────────────────────────────────────────────────────────

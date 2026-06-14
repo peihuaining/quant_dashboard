@@ -589,6 +589,21 @@
       </div>
     </div>
 
+    <!-- Equity curve chart -->
+    <div class="bg-gray-800 rounded-lg p-4">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-sm font-medium text-gray-200">实盘净值曲线</span>
+        <span class="text-xs text-gray-500" x-text="liveEquityPoints.length ? liveEquityPoints.length + ' 个数据点' : '数据积累中...'"></span>
+      </div>
+      <div x-show="liveEquityPoints.length < 2"
+        class="flex items-center justify-center text-xs text-gray-600 py-8">
+        净值曲线在首次访问后开始积累，每次刷新追加一条记录
+      </div>
+      <div x-show="liveEquityPoints.length >= 2" style="height:180px">
+        <canvas id="liveEquityChart"></canvas>
+      </div>
+    </div>
+
     <!-- Orders + Logs in 2-col grid -->
     <div class="grid grid-cols-2 gap-4">
       <template x-for="section in liveSections" :key="section.title">
@@ -999,6 +1014,8 @@ function app() {
     liveLastRefresh: '',
     liveAutoRefresh: false,
     liveAutoRefreshTimer: null,
+    liveEquityChart: null,
+    liveEquityPoints: [],
     liveSections: [
       { title: '最近订单 (10笔)', cmd: 'orders', output: null, loading: false },
       { title: '算法日志 (1h)',   cmd: 'logs',   output: null, loading: false },
@@ -1101,6 +1118,9 @@ function app() {
         }
         if (oldTab === 'Phase-23') {
           this.phase23Chart?.destroy(); this.phase23Chart = null;
+        }
+        if (oldTab === '实盘') {
+          this.liveEquityChart?.destroy(); this.liveEquityChart = null;
         }
       });
 
@@ -1336,16 +1356,18 @@ function app() {
     // ── 实盘 ──────────────────────────────────────────────────────
     async loadLive() {
       this.liveLoading = true;
-      // structured + raw sections in parallel
       const results = await Promise.allSettled([
         fetch(`${API}/api/live/structured`).then(r=>r.json()),
+        fetch(`${API}/api/live/equity_history`).then(r=>r.json()),
         ...this.liveSections.map(s => {
           s.loading = true; s.output = null;
           return this._fetchLiveSection(s);
         }),
       ]);
-      if (results[0].status === 'fulfilled') {
-        this.liveStructured = results[0].value;
+      if (results[0].status === 'fulfilled') this.liveStructured = results[0].value;
+      if (results[1].status === 'fulfilled') {
+        this.liveEquityPoints = results[1].value.points || [];
+        this.$nextTick(() => this.renderLiveEquityChart());
       }
       this.liveLastRefresh = new Date().toLocaleTimeString('zh-CN');
       this.liveLoading = false;
@@ -1376,6 +1398,60 @@ function app() {
         clearInterval(this.liveAutoRefreshTimer);
         this.liveAutoRefreshTimer = null;
       }
+    },
+
+    renderLiveEquityChart() {
+      const ctx = document.getElementById('liveEquityChart');
+      if (!ctx || this.liveEquityPoints.length < 2) return;
+      if (this.liveEquityChart) this.liveEquityChart.destroy();
+      const pts = this.liveEquityPoints;
+      // Downsample if too many points (keep last 240 for readability)
+      const sample = pts.length > 240 ? pts.filter((_,i) => i % Math.ceil(pts.length/240) === 0).concat(pts[pts.length-1]) : pts;
+      const first = sample[0]?.v || 0;
+      this.liveEquityChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: sample.map(p => p.t.slice(5,16)),   // MM-DD HH:mm
+          datasets: [{
+            label: '实盘净值',
+            data: sample.map(p => p.v),
+            borderColor: '#6366f1',
+            backgroundColor: 'rgba(99,102,241,0.06)',
+            fill: true, tension: 0.35,
+            pointRadius: sample.length > 60 ? 0 : 2,
+            borderWidth: 2,
+          }, {
+            label: '起始净值',
+            data: sample.map(() => first),
+            borderColor: '#4b5563',
+            borderDash: [4, 4],
+            pointRadius: 0,
+            borderWidth: 1,
+          }],
+        },
+        options: {
+          animation: false, responsive: true, maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              mode: 'index', intersect: false,
+              callbacks: {
+                label: ctx => '$' + ctx.raw.toLocaleString('en-US', {maximumFractionDigits: 0}),
+              },
+            },
+          },
+          scales: {
+            x: { ticks: { color: '#9ca3af', maxTicksLimit: 8, font: { size: 10 } }, grid: { color: '#374151' } },
+            y: {
+              ticks: {
+                color: '#9ca3af', font: { size: 10 },
+                callback: v => '$' + (v/1000).toFixed(0) + 'k',
+              },
+              grid: { color: '#374151' },
+            },
+          },
+        },
+      });
     },
 
     // ── 基础设施 ──────────────────────────────────────────────────
