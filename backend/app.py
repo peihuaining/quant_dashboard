@@ -14,6 +14,7 @@ import live_bridge
 import infra
 import code_mgr
 import signal_monitor
+import backtest_runner
 
 # ── IP 白名单 ─────────────────────────────────────────────────────────────────
 ALLOWED_NETWORKS = [
@@ -243,6 +244,18 @@ def signal_config():
 def signal_logs():
     lines = signal_monitor.get_recent_signals()
     return {"lines": lines, "total": len(lines)}
+
+
+# ── backtest trigger (test project 30796820 only) ─────────────────────────────
+
+@app.post("/api/backtest/run")
+async def run_backtest(days: int = Query(365, ge=backtest_runner.MIN_DAYS, le=backtest_runner.MAX_DAYS)):
+    return await backtest_runner.trigger(days)
+
+
+@app.get("/api/backtest/job")
+def backtest_job():
+    return backtest_runner.get_status()
 
 
 # ── static frontend ───────────────────────────────────────────────────────────

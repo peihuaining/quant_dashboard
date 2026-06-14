@@ -129,8 +129,55 @@
 
   <!-- Detail Panel -->
   <div class="flex-1 overflow-y-auto p-5" x-show="!showCompare">
-    <div x-show="!selectedId" class="h-full flex items-center justify-center text-gray-600 text-sm">
-      ← 点击左侧列表选择回测
+    <!-- Trigger panel (shown when no backtest selected) -->
+    <div x-show="!selectedId" class="h-full flex flex-col items-center justify-center gap-5 p-8">
+      <div class="text-gray-600 text-sm mb-2">← 左侧选择回测查看详情</div>
+
+      <div class="w-full max-w-md bg-gray-800 rounded-lg p-5 border border-gray-700">
+        <div class="flex items-center gap-2 mb-4">
+          <span class="text-sm font-semibold text-gray-200">触发云端回测</span>
+          <span class="tag bg-blue-900/60 text-blue-300 text-xs">测试项目 30796820</span>
+          <span class="tag bg-gray-700 text-gray-400 text-xs ml-auto">只读 · 不影响实盘</span>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3 mb-4">
+          <div>
+            <div class="text-xs text-gray-500 mb-1">回测天数</div>
+            <select x-model.number="btDays" class="w-full bg-gray-700 text-sm text-gray-100 rounded px-2 py-1.5 outline-none">
+              <option value="90">90 天</option>
+              <option value="180">180 天</option>
+              <option value="365">365 天（1 年）</option>
+              <option value="730">730 天（2 年）</option>
+            </select>
+          </div>
+          <div class="flex flex-col justify-end">
+            <button @click="triggerBacktest()"
+              :disabled="btJob?.status==='running'"
+              :class="btJob?.status==='running' ? 'opacity-50 cursor-not-allowed btn-ghost' : 'btn-primary'"
+              class="btn w-full"
+              x-text="btJob?.status==='running' ? '⏳ 运行中...' : '🚀 触发回测'"></button>
+          </div>
+        </div>
+
+        <!-- Job status + live output -->
+        <div x-show="btJob" class="space-y-2">
+          <div class="flex items-center gap-3 text-xs">
+            <span :class="{
+              'text-indigo-400 animate-pulse': btJob?.status==='running',
+              'text-green-400': btJob?.status==='done',
+              'text-red-400': btJob?.status==='error',
+              'text-gray-500': !btJob?.status || btJob?.status==='idle',
+            }"
+            x-text="btJob?.status==='running' ? `⏳ 运行中 ${btJob?.elapsed}s (${btJob?.days}天)` :
+                     btJob?.status==='done' ? `✅ 完成 (${btJob?.elapsed}s)` :
+                     btJob?.status==='error' ? `❌ 失败 (rc=${btJob?.returncode})` : ''"></span>
+          </div>
+          <pre x-show="btJob?.lines?.length"
+            class="text-xs text-gray-300 bg-gray-900 rounded p-3 max-h-52 overflow-y-auto font-mono leading-relaxed"
+            x-text="(btJob?.lines||[]).join('\n')"
+            x-effect="$el.scrollTop = $el.scrollHeight"></pre>
+        </div>
+      </div>
     </div>
     <div x-show="selectedId && detail" x-cloak>
       <div class="flex items-start justify-between mb-4">
@@ -311,6 +358,65 @@
           <canvas id="wftCrossChart"></canvas>
         </div>
       </div>
+
+      <!-- M4: Sharpe 热力图 -->
+      <div class="mt-6">
+        <div class="flex items-center gap-3 mb-3">
+          <h3 class="text-sm text-gray-400">Sharpe 热力图</h3>
+          <button @click="wftShowHeat=!wftShowHeat"
+            :class="wftShowHeat ? 'btn-primary' : 'btn-ghost'"
+            class="btn text-xs py-0.5 px-2">
+            <span x-text="wftShowHeat ? '收起' : '展开'"></span>
+          </button>
+        </div>
+        <div x-show="wftShowHeat" x-cloak>
+          <div class="bg-gray-800 rounded-lg overflow-auto">
+            <table class="w-full text-xs border-collapse">
+              <thead>
+                <tr>
+                  <th class="text-left px-3 py-2 text-gray-400 font-medium bg-gray-800 sticky left-0 z-10">实验 \ 窗口</th>
+                  <template x-for="w in wftMatrix.windows" :key="w">
+                    <th class="px-3 py-2 text-gray-400 font-medium text-center" x-text="w"></th>
+                  </template>
+                  <th class="px-3 py-2 text-gray-400 font-medium text-center">均值</th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="row in wftMatrix.rows" :key="row.name">
+                  <tr>
+                    <td class="px-3 py-2 font-mono text-gray-300 bg-gray-800 sticky left-0 z-10 whitespace-nowrap"
+                      x-text="row.name"></td>
+                    <template x-for="(v, i) in row.wins" :key="i">
+                      <td class="px-2 py-2 text-center font-mono font-medium"
+                        :style="{ backgroundColor: heatBg(v, wftMatrix.min, wftMatrix.max), color: '#fff' }">
+                        <span x-text="v != null ? parseFloat(v).toFixed(2) : '--'"></span>
+                      </td>
+                    </template>
+                    <td class="px-2 py-2 text-center font-mono font-medium"
+                      :style="{ backgroundColor: heatBg(row.avg, wftMatrix.min, wftMatrix.max), color: '#fff' }">
+                      <span x-text="parseFloat(row.avg).toFixed(3)"></span>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+          <div class="flex items-center gap-3 mt-2 text-xs text-gray-500 px-1">
+            <div class="flex items-center gap-1.5">
+              <div class="w-4 h-3 rounded" style="background:rgba(220,38,38,0.7)"></div> 低 Sharpe
+            </div>
+            <div class="flex items-center gap-1.5">
+              <div class="w-4 h-3 rounded" style="background:rgba(202,138,4,0.7)"></div> 中等
+            </div>
+            <div class="flex items-center gap-1.5">
+              <div class="w-4 h-3 rounded" style="background:rgba(22,163,74,0.8)"></div> 良好
+            </div>
+            <div class="flex items-center gap-1.5">
+              <div class="w-4 h-3 rounded" style="background:rgba(16,185,129,0.9)"></div> 优秀
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   </template>
 </div>
@@ -350,6 +456,58 @@
   </div>
   <div class="bg-gray-800 rounded-lg p-4" style="height:240px">
     <canvas id="phase23Chart"></canvas>
+  </div>
+
+  <!-- M4: TP × SL 参数热力图 -->
+  <div class="mt-5">
+    <div class="flex items-center gap-3 mb-3">
+      <h3 class="text-sm text-gray-400">参数热力图 (TP × SL)</h3>
+      <div class="flex items-center gap-1 ml-auto">
+        <span class="text-xs text-gray-500 mr-1">ADX 过滤:</span>
+        <button @click="p23HeatADX=null"
+          :class="p23HeatADX===null ? 'btn-primary' : 'btn-ghost'"
+          class="btn text-xs py-0.5 px-2">平均</button>
+        <template x-for="adx in p23Matrix.adxs" :key="adx">
+          <button @click="p23HeatADX=adx"
+            :class="p23HeatADX===adx ? 'btn-primary' : 'btn-ghost'"
+            class="btn text-xs py-0.5 px-2" x-text="'ADX≥'+adx"></button>
+        </template>
+      </div>
+    </div>
+
+    <div class="bg-gray-800 rounded-lg overflow-hidden">
+      <table class="w-full text-sm border-collapse">
+        <thead>
+          <tr>
+            <th class="px-4 py-2.5 text-left text-xs text-gray-500 font-medium">SL \ TP</th>
+            <template x-for="tp in p23Matrix.tps" :key="tp">
+              <th class="px-4 py-2.5 text-center text-xs text-gray-400 font-medium"
+                x-text="'TP=' + tp + '×'"></th>
+            </template>
+          </tr>
+        </thead>
+        <tbody>
+          <template x-for="row in p23Matrix.grid" :key="row.sl">
+            <tr>
+              <td class="px-4 py-3 text-xs text-gray-400 font-medium"
+                x-text="'SL=' + row.sl + '×'"></td>
+              <template x-for="cell in row.cells" :key="cell.tp">
+                <td class="px-4 py-3 text-center"
+                  :style="{ backgroundColor: heatBg(cell.sharpe, p23Matrix.min, p23Matrix.max) }">
+                  <div class="text-base font-bold font-mono text-white"
+                    x-text="cell.sharpe != null ? cell.sharpe.toFixed(3) : '--'"></div>
+                  <div class="text-xs text-white/60 mt-0.5"
+                    x-text="cell.count > 0 ? cell.count + ' 次' : ''"></div>
+                </td>
+              </template>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+    <div class="text-xs text-gray-600 mt-2 px-1">
+      数值为所选 ADX 条件下的 Sharpe 均值；颜色越绿代表回测结果越优
+    </div>
   </div>
 </div>
 </template>
@@ -818,16 +976,22 @@ function app() {
     compareIds: [],
     compareData: [],
     compareChart: null,
+    // Backtest trigger (M5)
+    btDays: 365,
+    btJob: null,
+    btPolling: null,
 
     // WFT tab
     wftData: [],
     wftSelected: null,
     wftChart: null,
     wftCrossChart: null,
+    wftShowHeat: false,   // M4: heatmap toggle
 
     // Phase23 tab
     phase23: [],
     phase23Chart: null,
+    p23HeatADX: null,    // M4: ADX filter (null = average all)
 
     // Live tab — structured view
     liveStructured: null,
@@ -1228,6 +1392,76 @@ function app() {
         cron:    cron.status==='fulfilled'    ? cron.value    : {},
       };
       this.infraLoading = false;
+    },
+
+    // ── M4: heatmap getters & color util ─────────────────────────
+    get wftMatrix() {
+      // Deduplicate by name, keep highest avg_sharpe
+      const map = {};
+      for (const e of this.wftData) {
+        if (!map[e.name] || e.avg_sharpe > map[e.name].avg_sharpe) map[e.name] = e;
+      }
+      const exps = Object.values(map);
+      const wins = [...new Set(exps.flatMap(e => e.windows.map(w => w.window)))].sort();
+      const rows = exps.map(e => {
+        const wm = {};
+        e.windows.forEach(w => { wm[w.window] = parseFloat(w.sharpe); });
+        return { name: e.name, wins: wins.map(w => wm[w] ?? null), avg: e.avg_sharpe };
+      });
+      const vals = rows.flatMap(r => r.wins).filter(v => v != null);
+      return { rows, windows: wins, min: Math.min(...vals, 0), max: Math.max(...vals, 1) };
+    },
+
+    get p23Matrix() {
+      const adx = this.p23HeatADX;
+      const items = adx != null ? this.phase23.filter(c => c.adx == adx) : this.phase23;
+      const tps  = [...new Set(this.phase23.map(c => c.tp))].sort((a,b) => a-b);
+      const sls  = [...new Set(this.phase23.map(c => c.sl))].sort((a,b) => a-b);
+      const adxs = [...new Set(this.phase23.map(c => c.adx))].sort((a,b) => a-b);
+      const grid = sls.map(sl => ({
+        sl,
+        cells: tps.map(tp => {
+          const m = items.filter(c => c.tp == tp && c.sl == sl);
+          const sharpe = m.length ? +(m.reduce((s,c) => s+(c.sharpe||0), 0) / m.length).toFixed(3) : null;
+          return { tp, sharpe, count: m.length };
+        }),
+      }));
+      const vals = grid.flatMap(r => r.cells.map(c => c.sharpe)).filter(v => v != null);
+      return { tps, sls, adxs, grid, min: Math.min(...vals, 0), max: Math.max(...vals, 0.5) };
+    },
+
+    heatBg(v, min, max) {
+      if (v == null) return '#111827';
+      const t = Math.max(0, Math.min(1, (v - min) / Math.max(max - min, 0.001)));
+      if (t < 0.25) return `rgba(185,28,28,${0.55 + t * 0.5})`;
+      if (t < 0.50) return `rgba(161,98,7,${0.55 + t * 0.4})`;
+      if (t < 0.75) return `rgba(21,128,61,${0.55 + t * 0.4})`;
+      return `rgba(5,150,105,${0.65 + t * 0.35})`;
+    },
+
+    // ── M5: backtest trigger ──────────────────────────────────────
+    async triggerBacktest() {
+      const r = await fetch(`${API}/api/backtest/run?days=${this.btDays}`, { method:'POST' }).then(r=>r.json()).catch(e=>({ error: e.message }));
+      if (r.error) { alert('触发失败: ' + r.error); return; }
+      this.btJob = r;
+      this.startBtPolling();
+    },
+
+    startBtPolling() {
+      if (this.btPolling) return;
+      this.btPolling = setInterval(async () => {
+        const s = await fetch(`${API}/api/backtest/job`).then(r=>r.json()).catch(()=>null);
+        if (s) this.btJob = s;
+        if (s?.status !== 'running') {
+          clearInterval(this.btPolling);
+          this.btPolling = null;
+          // Reload backtest list after successful run
+          if (s?.status === 'done') {
+            const bts = await fetch(`${API}/api/backtests`).then(r=>r.json()).catch(()=>null);
+            if (bts) { this.backtests = bts.items; this.totalBacktests = bts.total; }
+          }
+        }
+      }, 5000);
     },
 
     // ── risk metrics (computed-like getter) ──────────────────────
