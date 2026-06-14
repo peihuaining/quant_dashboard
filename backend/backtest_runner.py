@@ -1,11 +1,27 @@
 """一键回测触发 — 仅针对测试项目 30796820，严禁触碰实盘 29000050"""
 import asyncio
+import os
 import time
+from pathlib import Path
 from typing import Optional
 
 QC_AGENT_DIR = "/home/administrator/workspace/quantconnect_agent"
+SECRETS_ENV  = Path.home() / ".openclaw" / "secrets.env"
 MAX_DAYS = 730
 MIN_DAYS = 30
+
+
+def _build_env() -> dict:
+    """继承当前进程环境，并叠加 secrets.env 中的凭证。"""
+    env = os.environ.copy()
+    if SECRETS_ENV.exists():
+        for line in SECRETS_ENV.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            env.setdefault(k.strip(), v.strip())
+    return env
 
 _job: Optional["BtJob"] = None
 
@@ -33,6 +49,7 @@ async def _run(job: BtJob) -> None:
         proc = await asyncio.create_subprocess_exec(
             "python3", "qc_live_ops.py", "backtest", str(job.days),
             cwd=QC_AGENT_DIR,
+            env=_build_env(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
