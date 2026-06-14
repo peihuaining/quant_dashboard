@@ -12,6 +12,8 @@ from fastapi.staticfiles import StaticFiles
 import scanner
 import live_bridge
 import infra
+import code_mgr
+import signal_monitor
 
 # ── IP 白名单 ─────────────────────────────────────────────────────────────────
 ALLOWED_NETWORKS = [
@@ -203,6 +205,44 @@ async def infra_git():
 @app.get("/api/infra/cron")
 async def infra_cron():
     return infra.get_cron_status()
+
+
+# ── code manager ─────────────────────────────────────────────────────────────
+
+@app.get("/api/code/diff")
+async def code_diff(
+    from_branch: str = Query("master"),
+    to_branch: str = Query("feature/live-ema50-correction"),
+    file: Optional[str] = Query(None),
+):
+    return await code_mgr.get_diff(from_branch, to_branch, file)
+
+
+@app.get("/api/code/commits")
+async def code_commits(
+    branch: str = Query("feature/live-ema50-correction"),
+    n: int = Query(15, ge=1, le=50),
+    base: Optional[str] = Query(None),
+):
+    return await code_mgr.get_commits(branch, n, base)
+
+
+@app.get("/api/code/branches")
+async def code_branches():
+    return await code_mgr.get_branches_with_stats()
+
+
+# ── signal monitor ────────────────────────────────────────────────────────────
+
+@app.get("/api/signal/config")
+def signal_config():
+    return signal_monitor.get_strategy_config_extended()
+
+
+@app.get("/api/signal/logs")
+def signal_logs():
+    lines = signal_monitor.get_recent_signals()
+    return {"lines": lines, "total": len(lines)}
 
 
 # ── static frontend ───────────────────────────────────────────────────────────
