@@ -1,0 +1,1032 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Quant Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<style>
+  [x-cloak]{display:none!important}
+  .sidebar-item{@apply flex items-center justify-between px-3 py-1.5 rounded cursor-pointer text-sm text-gray-300 hover:bg-gray-700 hover:text-white transition-colors}
+  .sidebar-item.active{@apply bg-indigo-600 text-white}
+  .kpi-card{@apply bg-gray-800 rounded-lg p-4 flex flex-col gap-1}
+  .kpi-val{@apply text-2xl font-bold}
+  .kpi-lbl{@apply text-xs text-gray-400 uppercase tracking-wide}
+  .tag{@apply text-xs px-2 py-0.5 rounded-full font-medium}
+  .btn{@apply px-3 py-1.5 rounded text-sm font-medium transition-colors cursor-pointer}
+  .btn-primary{@apply bg-indigo-600 text-white hover:bg-indigo-500}
+  .btn-ghost{@apply bg-gray-700 text-gray-200 hover:bg-gray-600}
+  .tbl th{@apply text-left text-xs text-gray-400 uppercase tracking-wide px-3 py-2 bg-gray-800 sticky top-0}
+  .tbl td{@apply px-3 py-2 text-sm border-b border-gray-700/50}
+  .tbl tr:hover td{@apply bg-gray-700/30}
+  ::-webkit-scrollbar{width:6px;height:6px}
+  ::-webkit-scrollbar-track{background:#1f2937}
+  ::-webkit-scrollbar-thumb{background:#4b5563;border-radius:3px}
+</style>
+</head>
+<body class="bg-gray-900 text-gray-100 h-screen flex flex-col overflow-hidden" x-data="app()" x-init="init()">
+
+<!-- Top Bar -->
+<header class="flex items-center justify-between px-5 py-2.5 bg-gray-800 border-b border-gray-700 flex-shrink-0">
+  <div class="flex items-center gap-3">
+    <span class="text-indigo-400 font-bold text-lg">Quant Lab</span>
+    <!-- live status dot -->
+    <div class="flex items-center gap-1.5 text-xs" x-show="liveStructured">
+      <span :class="liveStructured?.session?.status?.toLowerCase()==='running' ? 'bg-green-400' : 'bg-yellow-400'"
+        class="w-2 h-2 rounded-full inline-block"></span>
+      <span :class="liveStructured?.regime==='BULL' ? 'text-green-400' : liveStructured?.regime==='BEAR' ? 'text-red-400' : 'text-gray-400'"
+        x-text="liveStructured?.regime || ''"></span>
+      <span class="text-gray-500" x-text="liveStructured?.runtime_stats?.['Equity'] || ''"></span>
+    </div>
+    <span class="text-gray-500 text-xs" x-text="'共 ' + totalBacktests + ' 个回测'"></span>
+  </div>
+  <nav class="flex gap-1">
+    <template x-for="tab in ['回测', 'WFT', 'Phase-23', '实盘', '基础设施']" :key="tab">
+      <button
+        @click="mainTab=tab;
+                if(tab==='实盘' && !liveStructured) loadLive();
+                if(tab==='基础设施' && !infraData) loadInfra()"
+        :class="mainTab===tab ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-700'"
+        class="px-4 py-1.5 rounded text-sm font-medium transition-colors" x-text="tab"></button>
+    </template>
+  </nav>
+  <div class="flex items-center gap-2 text-xs text-gray-500">
+    <span x-show="loading" class="text-indigo-400 animate-pulse">加载中...</span>
+    <span x-text="'更新: ' + lastRefresh"></span>
+  </div>
+</header>
+
+<div class="flex flex-1 overflow-hidden">
+
+<!-- ── TAB: 回测 ────────────────────────────────────────────────── -->
+<template x-if="mainTab==='回测'">
+<div class="flex flex-1 overflow-hidden">
+
+  <!-- Sidebar -->
+  <aside class="w-52 bg-gray-800 border-r border-gray-700 flex flex-col overflow-y-auto flex-shrink-0 py-2">
+    <div class="px-3 py-1 text-xs text-gray-500 uppercase tracking-wider mb-1">实验分组</div>
+    <template x-for="g in groups" :key="g.key">
+      <div @click="filterGroup=g.key; selectedId=null; compareIds=[]"
+        :class="filterGroup===g.key ? 'active':''"
+        class="sidebar-item">
+        <span x-text="g.label"></span>
+        <span class="text-xs bg-gray-700 px-1.5 py-0.5 rounded-full" x-text="g.count"></span>
+      </div>
+    </template>
+    <div x-show="compareIds.length>0" class="mt-3 mx-2 p-2 bg-indigo-900/40 rounded border border-indigo-700 text-xs">
+      <div class="text-indigo-300 font-medium mb-1" x-text="'已选 ' + compareIds.length + '/3 个'"></div>
+      <button @click="openCompare()" class="w-full btn btn-primary text-xs py-1">对比视图 →</button>
+      <button @click="compareIds=[]" class="w-full mt-1 btn btn-ghost text-xs py-1">清除</button>
+    </div>
+  </aside>
+
+  <!-- List -->
+  <div class="w-80 flex flex-col border-r border-gray-700 overflow-hidden flex-shrink-0">
+    <div class="px-3 py-2 bg-gray-800 border-b border-gray-700 flex items-center gap-2">
+      <input x-model="search" @input="selectedId=null" placeholder="搜索名称..."
+        class="flex-1 bg-gray-700 text-sm rounded px-2 py-1 text-gray-100 placeholder-gray-500 outline-none">
+      <span class="text-xs text-gray-500" x-text="filteredList.length + ' 条'"></span>
+    </div>
+    <div class="flex-1 overflow-y-auto">
+      <table class="tbl w-full">
+        <thead><tr>
+          <th>名称</th>
+          <th @click="sortBy('sharpe')" class="cursor-pointer hover:text-white">Sharpe</th>
+          <th @click="sortBy('annualReturn')" class="cursor-pointer hover:text-white">年化</th>
+          <th class="w-8"></th>
+        </tr></thead>
+        <tbody>
+          <template x-for="bt in filteredList" :key="bt.backtestId">
+            <tr @click="selectBacktest(bt.backtestId)"
+              :class="[
+                selectedId===bt.backtestId ? 'bg-indigo-900/40' : '',
+                bt.sharpe < 0 ? 'text-red-400' : bt.sharpe > 1.5 ? 'text-green-400' : ''
+              ]"
+              class="cursor-pointer">
+              <td class="max-w-[140px]">
+                <div class="truncate text-xs" x-text="shortName(bt.name)"></div>
+                <div class="text-gray-500 text-xs" x-text="bt.created"></div>
+              </td>
+              <td :class="sharpeColor(bt.sharpe)" class="font-mono text-xs" x-text="fmtNum(bt.sharpe,3)"></td>
+              <td class="font-mono text-xs" x-text="fmtPct(bt.annualReturn)"></td>
+              <td>
+                <input type="checkbox"
+                  :checked="compareIds.includes(bt.backtestId)"
+                  :disabled="compareIds.length>=3 && !compareIds.includes(bt.backtestId)"
+                  @click.stop="toggleCompare(bt.backtestId)"
+                  class="accent-indigo-500 cursor-pointer">
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Detail Panel -->
+  <div class="flex-1 overflow-y-auto p-5" x-show="!showCompare">
+    <div x-show="!selectedId" class="h-full flex items-center justify-center text-gray-600 text-sm">
+      ← 点击左侧列表选择回测
+    </div>
+    <div x-show="selectedId && detail" x-cloak>
+      <div class="flex items-start justify-between mb-4">
+        <div>
+          <h2 class="font-semibold text-base" x-text="detail?.name"></h2>
+          <div class="text-xs text-gray-400 mt-0.5">
+            <span x-text="fmtDate(detail?.backtestStart)"></span>
+            <span> → </span>
+            <span x-text="fmtDate(detail?.backtestEnd)"></span>
+            <span class="ml-2 text-gray-500" x-text="'proj ' + detail?.projectId"></span>
+          </div>
+        </div>
+        <span :class="detail?.status==='Completed' ? 'bg-green-900 text-green-300':'bg-yellow-900 text-yellow-300'"
+          class="tag" x-text="detail?.status"></span>
+      </div>
+
+      <div class="grid grid-cols-3 gap-3 mb-5">
+        <template x-for="kpi in kpiCards" :key="kpi.key">
+          <div class="kpi-card">
+            <div class="kpi-lbl" x-text="kpi.label"></div>
+            <div class="kpi-val" :class="kpi.color ? kpi.color(kpiVal(kpi)) : ''" x-text="kpi.fmt(kpiVal(kpi))"></div>
+          </div>
+        </template>
+      </div>
+
+      <div class="flex gap-2 mb-3">
+        <button @click="chartMode='monthly'" :class="chartMode==='monthly' ? 'btn-primary':'btn-ghost'" class="btn text-xs">月度净值</button>
+        <button @click="chartMode='trade'" :class="chartMode==='trade' ? 'btn-primary':'btn-ghost'" class="btn text-xs">逐笔净值</button>
+      </div>
+
+      <div class="bg-gray-800 rounded-lg p-4 mb-5" style="height:260px">
+        <canvas id="equityChart"></canvas>
+      </div>
+
+      <details class="bg-gray-800 rounded-lg mb-5">
+        <summary class="px-4 py-2 text-sm text-gray-400 cursor-pointer hover:text-white">次要指标</summary>
+        <div class="px-4 pb-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm">
+          <template x-for="s in secondaryStats" :key="s.key">
+            <div class="flex justify-between py-1 border-b border-gray-700/40">
+              <span class="text-gray-400" x-text="s.label"></span>
+              <span class="font-mono" x-text="fmtStat(detail?.statistics, s.key)"></span>
+            </div>
+          </template>
+        </div>
+      </details>
+
+      <div class="bg-gray-800 rounded-lg overflow-hidden">
+        <div class="px-4 py-2 border-b border-gray-700 flex items-center justify-between">
+          <span class="text-sm text-gray-300">交易记录</span>
+          <span class="text-xs text-gray-500" x-text="'共 ' + tradeTotal + ' 笔'"></span>
+        </div>
+        <div class="overflow-x-auto max-h-64 overflow-y-auto">
+          <table class="tbl w-full text-xs">
+            <thead><tr>
+              <th>标的</th><th>入场</th><th>出场</th>
+              <th>P&L</th><th>MAE</th><th>MFE</th><th>时长</th>
+            </tr></thead>
+            <tbody>
+              <template x-for="t in trades" :key="t.id">
+                <tr>
+                  <td class="font-medium" x-text="t.symbol"></td>
+                  <td x-text="t.entryTime?.slice(0,10)"></td>
+                  <td x-text="t.exitTime?.slice(0,10)"></td>
+                  <td :class="t.profitLoss>=0 ? 'text-green-400':'text-red-400'" class="font-mono"
+                    x-text="(t.profitLoss>=0?'+':'') + fmtNum(t.profitLoss,0)"></td>
+                  <td class="text-red-400 font-mono" x-text="fmtNum(t.mae,0)"></td>
+                  <td class="text-green-400 font-mono" x-text="fmtNum(t.mfe,0)"></td>
+                  <td x-text="t.duration?.split('.')[0]"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+        <div x-show="tradeOffset+50 < tradeTotal" class="px-4 py-2 border-t border-gray-700">
+          <button @click="loadMoreTrades()" class="btn btn-ghost text-xs">加载更多</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Compare Panel -->
+  <div class="flex-1 overflow-y-auto p-5" x-show="showCompare" x-cloak>
+    <div class="flex items-center gap-3 mb-5">
+      <button @click="showCompare=false" class="btn btn-ghost text-xs">← 返回</button>
+      <h2 class="font-semibold">对比视图</h2>
+    </div>
+    <div class="bg-gray-800 rounded-lg overflow-hidden mb-5">
+      <div class="overflow-x-auto">
+        <table class="tbl w-full text-sm">
+          <thead><tr>
+            <th>指标</th>
+            <template x-for="c in compareData" :key="c.backtestId">
+              <th x-text="shortName(c.name)"></th>
+            </template>
+          </tr></thead>
+          <tbody>
+            <template x-for="row in compareRows" :key="row.key">
+              <tr>
+                <td class="text-gray-400" x-text="row.label"></td>
+                <template x-for="c in compareData" :key="c.backtestId">
+                  <td class="font-mono" :class="row.color ? row.color(getStat(c,row.key)) : ''"
+                    x-text="row.fmt(getStat(c,row.key))"></td>
+                </template>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="bg-gray-800 rounded-lg p-4" style="height:300px">
+      <canvas id="compareChart"></canvas>
+    </div>
+  </div>
+</div>
+</template>
+
+<!-- ── TAB: WFT ──────────────────────────────────────────────────── -->
+<template x-if="mainTab==='WFT'">
+<div class="flex-1 overflow-y-auto p-5">
+  <div class="flex gap-2 mb-5">
+    <template x-for="exp in wftData" :key="exp.name">
+      <button @click="wftSelected=exp.name"
+        :class="wftSelected===exp.name ? 'btn-primary':'btn-ghost'" class="btn" x-text="exp.name"></button>
+    </template>
+  </div>
+  <template x-if="wftExperiment">
+    <div x-init="$nextTick(() => { renderWftLineChart(); renderWftCrossChart(); })">
+      <div class="grid grid-cols-3 gap-4 mb-5">
+        <div class="kpi-card">
+          <div class="kpi-lbl">平均 Sharpe</div>
+          <div class="kpi-val" :class="sharpeColor(wftExperiment.avg_sharpe)" x-text="fmtNum(wftExperiment.avg_sharpe,3)"></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-lbl">正收益窗口</div>
+          <div class="kpi-val" x-text="wftExperiment.positive_windows + '/' + wftExperiment.total_windows"></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-lbl">Commit</div>
+          <div class="kpi-val text-base font-mono text-indigo-400" x-text="wftExperiment.commit || 'N/A'"></div>
+        </div>
+      </div>
+
+      <div class="bg-gray-800 rounded-lg p-4 mb-5" style="height:240px">
+        <canvas id="wftChart"></canvas>
+      </div>
+
+      <div class="bg-gray-800 rounded-lg overflow-hidden">
+        <table class="tbl w-full">
+          <thead><tr>
+            <th>窗口</th>
+            <template x-if="wftExperiment.multi_config"><th>配置</th></template>
+            <th>开始</th><th>结束</th>
+            <th>Sharpe</th><th>年化</th><th>回撤</th><th>胜率</th><th>订单</th>
+          </tr></thead>
+          <tbody>
+            <template x-for="(w,i) in wftExperiment.windows" :key="i">
+              <tr>
+                <td class="font-medium" x-text="w.window"></td>
+                <template x-if="wftExperiment.multi_config">
+                  <td class="text-indigo-300 text-xs" x-text="w.config"></td>
+                </template>
+                <td x-text="w.start"></td>
+                <td x-text="w.end"></td>
+                <td :class="sharpeColor(parseFloat(w.sharpe))" class="font-mono" x-text="w.sharpe"></td>
+                <td class="font-mono" x-text="w.annual"></td>
+                <td class="font-mono text-red-400" x-text="w.drawdown"></td>
+                <td class="font-mono" x-text="w.win_rate"></td>
+                <td class="font-mono" x-text="w.total_orders"></td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="mt-6">
+        <h3 class="text-sm text-gray-400 mb-3">实验横向对比</h3>
+        <div class="bg-gray-800 rounded-lg p-4" style="height:220px">
+          <canvas id="wftCrossChart"></canvas>
+        </div>
+      </div>
+    </div>
+  </template>
+</div>
+</template>
+
+<!-- ── TAB: Phase-23 ─────────────────────────────────────────────── -->
+<template x-if="mainTab==='Phase-23'">
+<div class="flex-1 overflow-y-auto p-5"
+     x-init="$nextTick(() => renderPhase23Chart())">
+  <h2 class="font-semibold mb-4">Phase-23 参数网格审计</h2>
+  <div class="bg-gray-800 rounded-lg overflow-hidden mb-5">
+    <table class="tbl w-full">
+      <thead><tr>
+        <th>配置</th><th>TP</th><th>SL</th><th>ADX</th>
+        <th>Sharpe</th><th>年化</th><th>回撤</th><th>胜率</th><th>订单</th><th>审计</th>
+      </tr></thead>
+      <tbody>
+        <template x-for="c in phase23" :key="c.name">
+          <tr :class="c.name==='ConfigE' ? 'ring-1 ring-indigo-500 ring-inset bg-indigo-900/20':''">
+            <td class="font-medium" x-text="c.name + (c.name==='ConfigE' ? ' ★':'')"></td>
+            <td class="font-mono text-xs" x-text="c.tp"></td>
+            <td class="font-mono text-xs" x-text="c.sl"></td>
+            <td class="font-mono text-xs" x-text="c.adx"></td>
+            <td :class="sharpeColor(c.sharpe)" class="font-mono" x-text="fmtNum(c.sharpe,3)"></td>
+            <td class="font-mono" x-text="fmtPct(c.annualReturn)"></td>
+            <td class="font-mono text-red-400" x-text="fmtPct(c.drawdown)"></td>
+            <td class="font-mono" x-text="c.winRate ? c.winRate.toFixed(0)+'%' : '-'"></td>
+            <td class="font-mono" x-text="c.totalOrders"></td>
+            <td>
+              <span :class="c.auditPassed ? 'bg-green-900 text-green-300':'bg-red-900 text-red-300'"
+                class="tag" x-text="c.auditPassed ? '✅ 通过':'❌ 未通过'"></span>
+            </td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </div>
+  <div class="bg-gray-800 rounded-lg p-4" style="height:240px">
+    <canvas id="phase23Chart"></canvas>
+  </div>
+</div>
+</template>
+
+<!-- ── TAB: 实盘 ─────────────────────────────────────────────────── -->
+<template x-if="mainTab==='实盘'">
+<div class="flex-1 overflow-y-auto p-5">
+  <!-- Header -->
+  <div class="flex items-center gap-3 mb-4">
+    <h2 class="font-semibold">实盘状态</h2>
+    <span class="tag bg-gray-700 text-gray-300 text-xs">项目 29000050（只读）</span>
+    <div class="ml-auto flex items-center gap-3">
+      <label class="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer select-none">
+        <input type="checkbox" x-model="liveAutoRefresh" @change="toggleLiveAutoRefresh()" class="accent-indigo-500">
+        自动刷新 60s
+      </label>
+      <button @click="loadLive()" :disabled="liveLoading"
+        :class="liveLoading ? 'opacity-50 cursor-not-allowed':''"
+        class="btn btn-ghost text-xs" x-text="liveLoading ? '加载中...' : '刷新'"></button>
+    </div>
+  </div>
+
+  <div x-show="!liveStructured && !liveLoading" class="text-gray-500 text-sm py-10 text-center">点击右上角「刷新」加载实盘数据</div>
+  <div x-show="liveLoading && !liveStructured" class="text-indigo-400 text-sm animate-pulse py-4">正在读取实盘状态...</div>
+
+  <div x-show="liveStructured" x-cloak class="space-y-4">
+
+    <!-- Session banner -->
+    <div class="bg-gray-800 rounded-lg px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+      <span :class="liveStructured?.session?.status?.toLowerCase()==='running' ? 'bg-green-900 text-green-300':'bg-yellow-900 text-yellow-300'"
+        class="tag" x-text="liveStructured?.session?.status || '未知'"></span>
+      <span class="text-gray-300 text-xs truncate max-w-xs" x-text="liveStructured?.session?.name || '--'"></span>
+      <span class="text-gray-500 text-xs">启动: <span x-text="(liveStructured?.session?.launched||'--').slice(0,16)"></span></span>
+      <span class="text-gray-600 font-mono text-xs" x-text="(liveStructured?.session?.session_id||'').slice(0,24) + '...'"></span>
+      <span class="ml-auto text-xs text-gray-600" x-text="liveLastRefresh ? '更新: '+liveLastRefresh : ''"></span>
+    </div>
+
+    <!-- Regime + KPIs -->
+    <div class="grid grid-cols-6 gap-3">
+      <!-- Regime badge -->
+      <div class="kpi-card items-center"
+        :class="liveStructured?.regime==='BULL' ? 'border border-green-700/60' : liveStructured?.regime==='BEAR' ? 'border border-red-700/60' : 'border border-gray-700'">
+        <div class="kpi-lbl">Regime</div>
+        <div class="kpi-val text-3xl"
+          :class="liveStructured?.regime==='BULL' ? 'text-green-400' : liveStructured?.regime==='BEAR' ? 'text-red-400' : 'text-gray-400'"
+          x-text="liveStructured?.regime || '--'"></div>
+      </div>
+      <!-- KPI cards -->
+      <template x-for="kpi in liveKpis" :key="kpi.key">
+        <div class="kpi-card">
+          <div class="kpi-lbl" x-text="kpi.label"></div>
+          <div class="kpi-val text-base font-mono"
+            :class="kpi.color ? kpi.color(liveStructured?.runtime_stats?.[kpi.key]) : ''"
+            x-text="liveStructured?.runtime_stats?.[kpi.key] || '--'"></div>
+        </div>
+      </template>
+    </div>
+
+    <!-- Orders + Logs in 2-col grid -->
+    <div class="grid grid-cols-2 gap-4">
+      <template x-for="section in liveSections" :key="section.title">
+        <div class="bg-gray-800 rounded-lg overflow-hidden">
+          <div class="px-4 py-2 border-b border-gray-700 flex items-center justify-between">
+            <span class="text-sm font-medium" x-text="section.title"></span>
+            <button @click="loadLiveSection(section)" class="text-xs text-gray-500 hover:text-gray-300">刷新</button>
+          </div>
+          <pre class="px-4 py-3 text-xs text-gray-300 overflow-x-auto whitespace-pre-wrap max-h-48 overflow-y-auto font-mono leading-relaxed"
+            x-text="section.output || (section.loading ? '加载中...' : '（空）')"></pre>
+        </div>
+      </template>
+    </div>
+  </div>
+</div>
+</template>
+
+<!-- ── TAB: 基础设施 ──────────────────────────────────────────────── -->
+<template x-if="mainTab==='基础设施'">
+<div class="flex-1 overflow-y-auto p-5">
+  <div class="flex items-center gap-3 mb-4">
+    <h2 class="font-semibold">基础设施健康</h2>
+    <button @click="loadInfra()" :disabled="infraLoading"
+      :class="infraLoading ? 'opacity-50 cursor-not-allowed':''"
+      class="ml-auto btn btn-ghost text-xs" x-text="infraLoading ? '检查中...' : '刷新'"></button>
+  </div>
+
+  <div x-show="!infraData && !infraLoading" class="text-gray-500 text-sm py-10 text-center">点击「刷新」检查系统状态</div>
+  <div x-show="infraLoading && !infraData" class="text-indigo-400 text-sm animate-pulse py-4">正在检查系统状态...</div>
+
+  <div x-show="infraData" x-cloak class="space-y-4">
+
+    <!-- 网络健康 -->
+    <div class="bg-gray-800 rounded-lg p-4">
+      <h3 class="text-sm font-semibold text-gray-200 mb-3">网络健康</h3>
+      <div class="flex flex-wrap items-center gap-4 mb-3">
+        <div class="flex items-center gap-2">
+          <span class="text-gray-400 text-sm">路由器</span>
+          <span :class="infraData?.network?.router_reachable ? 'bg-green-900 text-green-300':'bg-red-900 text-red-300'"
+            class="tag" x-text="infraData?.network?.router_reachable ? '✅ 可达':'❌ 不可达'"></span>
+        </div>
+        <div x-show="infraData?.network?.current_node" class="flex items-center gap-2">
+          <span class="text-gray-400 text-sm">当前 TCP Node</span>
+          <span class="font-mono text-indigo-300 text-sm"
+            x-text="infraData?.network?.current_node?.remarks?.match(/@[\w]+/)?.[0] || infraData?.network?.current_node?.id || '--'"></span>
+          <span class="text-gray-600 text-xs" x-text="'(' + (infraData?.network?.current_node?.id||'') + ')'"></span>
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-4 text-xs text-gray-500">
+        <div>
+          节点监控最后更新：<span class="text-gray-400" x-text="infraData?.network?.node_monitor?.last_modified || '无记录'"></span>
+          · <span :class="infraData?.network?.node_monitor?.size_kb > 0 ? 'text-yellow-400':'text-green-400'"
+            x-text="infraData?.network?.node_monitor?.size_kb + 'KB'"></span>
+        </div>
+        <div>
+          网络检查日志：<span :class="infraData?.network?.network_check?.size_kb === 0 ? 'text-green-400 font-medium':'text-yellow-400'"
+            x-text="infraData?.network?.network_check?.size_kb === 0 ? '0KB（静默，网络正常）' : infraData?.network?.network_check?.size_kb + 'KB'"></span>
+          · <span class="text-gray-400" x-text="infraData?.network?.network_check?.last_modified || '无记录'"></span>
+        </div>
+      </div>
+      <!-- Node log expandable -->
+      <details class="mt-3" x-show="infraData?.network?.node_monitor?.recent_lines?.length">
+        <summary class="text-xs text-gray-500 cursor-pointer hover:text-gray-300 select-none">节点监控日志（最近 30 行）</summary>
+        <pre class="mt-2 text-xs text-gray-400 bg-gray-900 rounded p-3 max-h-48 overflow-y-auto leading-relaxed"
+          x-text="infraData?.network?.node_monitor?.recent_lines?.join('\n') || ''"></pre>
+      </details>
+    </div>
+
+    <!-- Git 分支 + 定时任务 -->
+    <div class="grid grid-cols-5 gap-4">
+
+      <!-- Git 分支 (3/5) -->
+      <div class="col-span-3 bg-gray-800 rounded-lg p-4">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-semibold text-gray-200">策略 Git 分支</h3>
+          <span class="text-xs text-gray-500">当前：<span class="font-mono text-indigo-300" x-text="infraData?.git?.current || '--'"></span></span>
+        </div>
+        <div class="space-y-1 max-h-72 overflow-y-auto mb-3">
+          <template x-for="br in infraData?.git?.branches || []" :key="br.name">
+            <div :class="[
+              br.current ? 'bg-indigo-900/30 border border-indigo-700/40' : 'border border-transparent',
+              br.is_live && !br.current ? 'border-l-2 !border-l-green-600' : '',
+              'rounded px-2.5 py-1.5 text-xs hover:bg-gray-700/40 transition-colors'
+            ]">
+              <div class="flex items-center gap-2">
+                <span x-show="br.current" class="text-yellow-400 text-xs">★</span>
+                <span x-show="br.is_live && !br.current" class="text-green-400 text-xs">⚡</span>
+                <span :class="br.current ? 'text-white font-medium' : br.is_live ? 'text-green-300' : 'text-gray-300'"
+                  class="font-mono" x-text="br.name"></span>
+                <span class="text-gray-600 font-mono" x-text="br.commit"></span>
+              </div>
+              <div x-show="br.message" class="text-gray-500 ml-4 truncate mt-0.5" x-text="br.message"></div>
+            </div>
+          </template>
+        </div>
+        <div x-show="infraData?.git?.recent_commits?.length">
+          <div class="text-xs text-gray-500 mb-1.5">最近提交（当前分支）</div>
+          <div class="space-y-0.5">
+            <template x-for="c in infraData?.git?.recent_commits || []" :key="c">
+              <div class="text-xs font-mono text-gray-400 truncate" x-text="c"></div>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <!-- 定时任务 & 日志 (2/5) -->
+      <div class="col-span-2 bg-gray-800 rounded-lg p-4">
+        <h3 class="text-sm font-semibold text-gray-200 mb-3">日志 & 定时任务</h3>
+        <div class="space-y-3">
+          <template x-for="[key, info] in Object.entries(infraData?.cron || {})" :key="key">
+            <div class="text-xs border-b border-gray-700/40 pb-2">
+              <div class="flex items-center justify-between mb-0.5">
+                <span class="font-mono text-gray-300" x-text="key.replace(/_/g, ' ')"></span>
+                <span :class="info.size_kb > 0 ? 'text-yellow-400' : 'text-green-400 opacity-60'"
+                  class="font-mono" x-text="info.size_kb + ' KB'"></span>
+              </div>
+              <div class="text-gray-600" x-text="info.last_modified || '无记录'"></div>
+            </div>
+          </template>
+        </div>
+
+        <!-- QC Projects status -->
+        <div class="mt-4 pt-3 border-t border-gray-700">
+          <div class="text-xs text-gray-500 mb-2">QC 项目</div>
+          <div class="space-y-1.5 text-xs">
+            <div class="flex justify-between">
+              <span class="text-gray-400">实盘 29000050</span>
+              <span :class="liveStructured?.session?.status?.toLowerCase()==='running' ? 'text-green-400':'text-gray-500'"
+                x-text="liveStructured?.session?.status || '未知（未加载实盘页）'"></span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-gray-400">测试 30796820</span>
+              <span class="text-gray-600">仅用于回测</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+</template>
+
+</div><!-- end main flex -->
+
+<script>
+const API = '';
+
+function app() {
+  return {
+    mainTab: '回测',
+    loading: false,
+    lastRefresh: '--',
+    totalBacktests: 0,
+
+    // Backtest tab
+    backtests: [],
+    filterGroup: 'all',
+    search: '',
+    sortKey: 'created',
+    sortDir: -1,
+    selectedId: null,
+    detail: null,
+    chartData: null,
+    chartMode: 'monthly',
+    trades: [],
+    tradeOffset: 0,
+    tradeTotal: 0,
+    equityChart: null,
+    showCompare: false,
+    compareIds: [],
+    compareData: [],
+    compareChart: null,
+
+    // WFT tab
+    wftData: [],
+    wftSelected: null,
+    wftChart: null,
+    wftCrossChart: null,
+
+    // Phase23 tab
+    phase23: [],
+    phase23Chart: null,
+
+    // Live tab — structured view
+    liveStructured: null,
+    liveLoading: false,
+    liveLastRefresh: '',
+    liveAutoRefresh: false,
+    liveAutoRefreshTimer: null,
+    liveSections: [
+      { title: '最近订单 (10笔)', cmd: 'orders', output: null, loading: false },
+      { title: '算法日志 (1h)',   cmd: 'logs',   output: null, loading: false },
+    ],
+    liveKpis: [
+      { key: 'Equity',     label: '账户净值',   color: () => 'text-white' },
+      { key: 'Holdings',   label: '持仓市值',   color: () => 'text-gray-200' },
+      { key: 'Unrealized', label: '未实现盈亏', color: v => v && v.includes('-') ? 'text-red-400' : 'text-green-400' },
+      { key: 'Net Profit', label: '净利润',     color: v => v && v.includes('-') ? 'text-red-400' : 'text-green-400' },
+      { key: 'Return',     label: '回报率',     color: v => v && v.includes('-') ? 'text-red-400' : 'text-green-400' },
+    ],
+
+    // Infra tab
+    infraData: null,
+    infraLoading: false,
+
+    groups: [
+      { key: 'all', label: '全部', count: 0 },
+      { key: 'phase1', label: 'Phase 1', count: 0 },
+      { key: 'phase23', label: 'Phase 2-3', count: 0 },
+      { key: 'wft_configE', label: 'WFT ConfigE', count: 0 },
+      { key: 'wft_configF', label: 'WFT ConfigF', count: 0 },
+      { key: 'wft_capm3m', label: 'WFT capm3m', count: 0 },
+      { key: 'wft_dynamic', label: 'WFT dynamic', count: 0 },
+      { key: 'early', label: '早期归档', count: 0 },
+    ],
+
+    kpiCards: [
+      { key: 'sharpeRatio',              label: 'Sharpe Ratio',  fmt: v => fmtN(v,3), color: v => sharpeC(v) },
+      { key: 'compoundingAnnualReturn',  label: '年化收益',       fmt: v => fmtP(v) },
+      { key: 'drawdown',                 label: '最大回撤',       fmt: v => fmtP(v), color: () => 'text-red-400' },
+      { key: 'winRate',                  label: '胜率',           fmt: v => v ? (parseFloat(v)*100).toFixed(1)+'%' : '-' },
+      { key: 'profitLossRatio',          label: '盈亏比',         fmt: v => fmtN(v,3) },
+      { key: 'probabilisticSharpeRatio', label: 'PSR',           fmt: v => fmtP(v) },
+    ],
+
+    secondaryStats: [
+      { key: 'sortinoRatio',         label: 'Sortino' },
+      { key: 'informationRatio',     label: '信息比率' },
+      { key: 'portfolioTurnover',    label: '换手率' },
+      { key: 'valueAtRisk99',        label: 'VaR 99%' },
+      { key: 'annualStandardDeviation', label: '年化波动' },
+      { key: 'expectancy',           label: '期望值' },
+      { key: 'drawdownRecovery',     label: '回撤恢复(天)' },
+      { key: 'totalNetProfit',       label: '净利润' },
+    ],
+
+    compareRows: [
+      { key: 'sharpeRatio',             label: 'Sharpe',  fmt: v => fmtN(v,3), color: v => sharpeC(v) },
+      { key: 'compoundingAnnualReturn', label: '年化',    fmt: v => fmtP(v) },
+      { key: 'drawdown',                label: '最大回撤', fmt: v => fmtP(v), color: () => 'text-red-400' },
+      { key: 'sortinoRatio',            label: 'Sortino', fmt: v => fmtN(v,3) },
+      { key: 'winRate',                 label: '胜率',    fmt: v => v ? (parseFloat(v)*100).toFixed(1)+'%' : '-' },
+      { key: 'profitLossRatio',         label: '盈亏比',  fmt: v => fmtN(v,3) },
+      { key: 'totalNetProfit',          label: '净利润',  fmt: v => fmtP(v) },
+    ],
+
+    async init() {
+      this.loading = true;
+      const [bts, wft, p23] = await Promise.all([
+        fetch(`${API}/api/backtests`).then(r=>r.json()),
+        fetch(`${API}/api/wft`).then(r=>r.json()),
+        fetch(`${API}/api/phase23`).then(r=>r.json()),
+      ]);
+      this.backtests = bts.items;
+      this.totalBacktests = bts.total;
+      this.groups.forEach(g => {
+        g.count = g.key==='all' ? bts.total : bts.items.filter(x=>x.group===g.key).length;
+      });
+      this.wftData = wft.experiments;
+      this.wftSelected = wft.experiments[0]?.name;
+      this.phase23 = p23.configs;
+      this.loading = false;
+      this.lastRefresh = new Date().toLocaleTimeString('zh-CN');
+
+      this.$watch('chartMode', () => this.$nextTick(() => this.renderEquityChart()));
+
+      this.$watch('mainTab', (newTab, oldTab) => {
+        if (oldTab === '回测') {
+          this.equityChart?.destroy();  this.equityChart  = null;
+          this.compareChart?.destroy(); this.compareChart = null;
+        }
+        if (oldTab === 'WFT') {
+          this.wftChart?.destroy();      this.wftChart      = null;
+          this.wftCrossChart?.destroy(); this.wftCrossChart = null;
+        }
+        if (oldTab === 'Phase-23') {
+          this.phase23Chart?.destroy(); this.phase23Chart = null;
+        }
+      });
+
+      this.$watch('wftSelected', () => {
+        if (this.mainTab === 'WFT') this.$nextTick(() => {
+          this.renderWftLineChart();
+          this.renderWftCrossChart();
+        });
+      });
+    },
+
+    get filteredList() {
+      let list = this.backtests;
+      if (this.filterGroup !== 'all') list = list.filter(x => x.group === this.filterGroup);
+      if (this.search) list = list.filter(x => x.name.toLowerCase().includes(this.search.toLowerCase()));
+      return [...list].sort((a,b) => {
+        const va = a[this.sortKey] ?? -Infinity, vb = b[this.sortKey] ?? -Infinity;
+        return (va > vb ? 1 : va < vb ? -1 : 0) * this.sortDir;
+      });
+    },
+
+    sortBy(key) {
+      if (this.sortKey === key) this.sortDir *= -1;
+      else { this.sortKey = key; this.sortDir = -1; }
+    },
+
+    async selectBacktest(id) {
+      this.selectedId = id;
+      this.showCompare = false;
+      this.trades = [];
+      this.tradeOffset = 0;
+      this.tradeTotal = 0;
+      const [det, ch, tr] = await Promise.all([
+        fetch(`${API}/api/backtests/${id}`).then(r=>r.json()),
+        fetch(`${API}/api/backtests/${id}/charts`).then(r=>r.json()),
+        fetch(`${API}/api/backtests/${id}/trades?skip=0&limit=50`).then(r=>r.json()),
+      ]);
+      this.detail = det;
+      this.chartData = ch;
+      this.trades = tr.trades;
+      this.tradeTotal = tr.total;
+      this.$nextTick(() => this.renderEquityChart());
+    },
+
+    async loadMoreTrades() {
+      this.tradeOffset += 50;
+      const r = await fetch(`${API}/api/backtests/${this.selectedId}/trades?skip=${this.tradeOffset}&limit=50`).then(r=>r.json());
+      this.trades = [...this.trades, ...r.trades];
+    },
+
+    renderEquityChart() {
+      const ctx = document.getElementById('equityChart');
+      if (!ctx || !this.chartData) return;
+      if (this.equityChart) this.equityChart.destroy();
+      const pts = this.chartMode === 'monthly' ? this.chartData.equity : this.chartData.trade_curve;
+      if (!pts || !pts.length) return;
+      this.equityChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: pts.map(p => p.x),
+          datasets: [{
+            label: '净值',
+            data: pts.map(p => p.y),
+            borderColor: '#6366f1',
+            backgroundColor: 'rgba(99,102,241,0.08)',
+            fill: true, tension: 0.3,
+            pointRadius: pts.length > 100 ? 0 : 3,
+            borderWidth: 2,
+          }]
+        },
+        options: {
+          animation: false, responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { display: false }, tooltip: { mode: 'index' } },
+          scales: {
+            x: { ticks: { color:'#9ca3af', maxTicksLimit:8, font:{size:10} }, grid:{color:'#374151'} },
+            y: { ticks: { color:'#9ca3af', font:{size:10} }, grid:{color:'#374151'} }
+          }
+        }
+      });
+    },
+
+    toggleCompare(id) {
+      if (this.compareIds.includes(id)) this.compareIds = this.compareIds.filter(x=>x!==id);
+      else if (this.compareIds.length < 3) this.compareIds.push(id);
+    },
+
+    async openCompare() {
+      this.showCompare = true;
+      const r = await fetch(`${API}/api/compare?ids=${this.compareIds.join(',')}`).then(r=>r.json());
+      this.compareData = r.items;
+      const chartPs = await Promise.all(
+        this.compareIds.map(id => fetch(`${API}/api/backtests/${id}/charts`).then(r=>r.json()))
+      );
+      this.$nextTick(() => this.renderCompareChart(chartPs));
+    },
+
+    get wftExperiment() {
+      return this.wftData.find(e=>e.name===this.wftSelected);
+    },
+
+    renderCompareChart(chartDataArr) {
+      const ctx = document.getElementById('compareChart');
+      if (!ctx) return;
+      if (this.compareChart) this.compareChart.destroy();
+      const colors = ['#6366f1','#10b981','#f59e0b'];
+      const datasets = chartDataArr.map((cd, i) => {
+        const pts = cd.trade_curve || cd.equity || [];
+        return {
+          label: this.shortName(this.compareData[i]?.name || ''),
+          data: pts.map(p=>({x:p.x, y:p.y})),
+          borderColor: colors[i], backgroundColor: 'transparent',
+          tension: 0.3, pointRadius: 0, borderWidth: 2,
+        };
+      });
+      this.compareChart = new Chart(ctx, {
+        type: 'line', data: { datasets },
+        options: {
+          animation: false, responsive: true, maintainAspectRatio: false,
+          parsing: { xAxisKey:'x', yAxisKey:'y' },
+          plugins: { legend: { labels:{color:'#d1d5db',font:{size:11}} } },
+          scales: {
+            x: { type:'category', ticks:{color:'#9ca3af',maxTicksLimit:8,font:{size:10}}, grid:{color:'#374151'} },
+            y: { ticks:{color:'#9ca3af',font:{size:10}}, grid:{color:'#374151'} }
+          }
+        }
+      });
+    },
+
+    renderWftLineChart() {
+      const ctx = document.getElementById('wftChart');
+      if (!ctx || !this.wftExperiment) return;
+      if (this.wftChart) this.wftChart.destroy();
+      const wins = this.wftExperiment.windows;
+      const labels = [...new Set(wins.map(w=>w.window))];
+      const colors = ['#6366f1','#10b981','#f59e0b','#ec4899'];
+      const configs = [...new Set(wins.map(w=>w.config).filter(Boolean))];
+      let seriesDatasets;
+      if (configs.length > 1) {
+        seriesDatasets = configs.map((cfg, i) => {
+          const rows = wins.filter(w=>w.config===cfg);
+          return {
+            label: cfg,
+            data: rows.map(w=>parseFloat(w.sharpe)),
+            borderColor: colors[i], backgroundColor: colors[i]+'22',
+            fill: false, tension:0.3, pointRadius:5, borderWidth:2,
+          };
+        });
+      } else {
+        seriesDatasets = [{
+          label: 'Sharpe',
+          data: wins.map(w=>parseFloat(w.sharpe)),
+          borderColor: '#6366f1', backgroundColor:'rgba(99,102,241,0.1)',
+          fill:true, tension:0.3, pointRadius:5, borderWidth:2,
+        }];
+      }
+      this.wftChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            ...seriesDatasets,
+            { label:'基准 0', data:labels.map(()=>0), borderColor:'#ef4444', borderDash:[5,5], pointRadius:0, borderWidth:1 }
+          ]
+        },
+        options: {
+          animation:false, responsive:true, maintainAspectRatio:false,
+          plugins:{ legend:{labels:{color:'#d1d5db',font:{size:11}}} },
+          scales:{
+            x:{ticks:{color:'#9ca3af'},grid:{color:'#374151'}},
+            y:{ticks:{color:'#9ca3af'},grid:{color:'#374151'}}
+          }
+        }
+      });
+    },
+
+    renderWftCrossChart() {
+      const ctx = document.getElementById('wftCrossChart');
+      if (!ctx) return;
+      if (this.wftCrossChart) this.wftCrossChart.destroy();
+      const colors = ['#6366f1','#10b981','#f59e0b','#ec4899','#14b8a6'];
+      this.wftCrossChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: ['平均 Sharpe', '正收益率(0-1)'],
+          datasets: this.wftData.map((exp,i)=>({
+            label: exp.name,
+            data: [
+              exp.avg_sharpe ?? 0,
+              exp.total_windows ? +(exp.positive_windows/exp.total_windows).toFixed(3) : 0,
+            ],
+            backgroundColor: colors[i % colors.length],
+          }))
+        },
+        options: {
+          animation:false, responsive:true, maintainAspectRatio:false,
+          plugins:{ legend:{labels:{color:'#d1d5db',font:{size:11}}} },
+          scales:{
+            x:{ticks:{color:'#9ca3af'},grid:{color:'#374151'}},
+            y:{min:0, ticks:{color:'#9ca3af'},grid:{color:'#374151'}}
+          }
+        }
+      });
+    },
+
+    renderPhase23Chart() {
+      const ctx = document.getElementById('phase23Chart');
+      if (!ctx || !this.phase23.length) return;
+      if (this.phase23Chart) this.phase23Chart.destroy();
+      this.phase23Chart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: this.phase23.map(c=>c.name),
+          datasets: [{
+            label: 'Sharpe Ratio',
+            data: this.phase23.map(c=>c.sharpe),
+            backgroundColor: this.phase23.map(c=>
+              c.name==='ConfigE' ? '#6366f1' :
+              (c.sharpe||0) >= 0.4 ? '#10b981' : '#6b7280'
+            ),
+          }]
+        },
+        options: {
+          animation:false, responsive:true, maintainAspectRatio:false,
+          plugins:{ legend:{display:false} },
+          scales:{
+            x:{ticks:{color:'#9ca3af'},grid:{color:'#374151'}},
+            y:{ticks:{color:'#9ca3af'},grid:{color:'#374151'}}
+          }
+        }
+      });
+    },
+
+    // ── 实盘 ──────────────────────────────────────────────────────
+    async loadLive() {
+      this.liveLoading = true;
+      // structured + raw sections in parallel
+      const results = await Promise.allSettled([
+        fetch(`${API}/api/live/structured`).then(r=>r.json()),
+        ...this.liveSections.map(s => {
+          s.loading = true; s.output = null;
+          return this._fetchLiveSection(s);
+        }),
+      ]);
+      if (results[0].status === 'fulfilled') {
+        this.liveStructured = results[0].value;
+      }
+      this.liveLastRefresh = new Date().toLocaleTimeString('zh-CN');
+      this.liveLoading = false;
+    },
+
+    async _fetchLiveSection(section) {
+      try {
+        let url = `${API}/api/live/${section.cmd}`;
+        if (section.cmd === 'logs')   url += '?hours=1';
+        if (section.cmd === 'orders') url += '?n=10';
+        const r = await fetch(url).then(r=>r.json());
+        section.output = r.output || r.stderr || '（无输出）';
+      } catch(e) {
+        section.output = '请求失败: ' + e.message;
+      }
+      section.loading = false;
+    },
+
+    async loadLiveSection(section) {
+      section.loading = true; section.output = null;
+      await this._fetchLiveSection(section);
+    },
+
+    toggleLiveAutoRefresh() {
+      if (this.liveAutoRefresh) {
+        this.liveAutoRefreshTimer = setInterval(() => this.loadLive(), 60000);
+      } else {
+        clearInterval(this.liveAutoRefreshTimer);
+        this.liveAutoRefreshTimer = null;
+      }
+    },
+
+    // ── 基础设施 ──────────────────────────────────────────────────
+    async loadInfra() {
+      this.infraLoading = true;
+      const [network, git, cron] = await Promise.allSettled([
+        fetch(`${API}/api/infra/network`).then(r=>r.json()),
+        fetch(`${API}/api/infra/git`).then(r=>r.json()),
+        fetch(`${API}/api/infra/cron`).then(r=>r.json()),
+      ]);
+      this.infraData = {
+        network: network.status==='fulfilled' ? network.value : { error: network.reason?.message },
+        git:     git.status==='fulfilled'     ? git.value     : { error: git.reason?.message },
+        cron:    cron.status==='fulfilled'    ? cron.value    : {},
+      };
+      this.infraLoading = false;
+    },
+
+    // ── helpers ───────────────────────────────────────────────────
+    shortName(name) {
+      if (!name) return '';
+      return name.replace(/^(bt_p23_|bt_phase1_|bt_p1_|wft_ConfigE_|wft_ConfigF_|wft_capm3m_|wft_dynamic_)/,'').split('_').slice(0,3).join('_');
+    },
+    fmtNum(v,d=2) { return v==null ? '-' : parseFloat(v).toFixed(d); },
+    fmtPct(v) {
+      if (v==null) return '-';
+      const n = parseFloat(v);
+      return isNaN(n) ? '-' : (n>1 ? n.toFixed(1)+'%' : (n*100).toFixed(1)+'%');
+    },
+    fmtDate(s) { return s ? s.slice(0,10) : '-'; },
+    sharpeColor(v) {
+      if (v==null) return '';
+      const n = parseFloat(v);
+      if (n < 0) return 'text-red-400';
+      if (n >= 1.0) return 'text-green-400';
+      if (n >= 0.5) return 'text-yellow-400';
+      return 'text-gray-300';
+    },
+    kpiVal(kpi) {
+      const s = this.detail?.statistics;
+      if (!s) return null;
+      return s[kpi.key] ?? s[kpi.key.charAt(0).toUpperCase()+kpi.key.slice(1)];
+    },
+    fmtStat(stats, key) {
+      if (!stats) return '-';
+      const v = stats[key];
+      return v==null ? '-' : String(v);
+    },
+    getStat(item, key) {
+      return item?.statistics?.[key];
+    },
+  };
+}
+
+function fmtN(v,d){ return v==null?'-':parseFloat(v).toFixed(d); }
+function fmtP(v){
+  if(v==null) return '-';
+  const n=parseFloat(v);
+  return isNaN(n)?'-':(n>1?n.toFixed(1)+'%':(n*100).toFixed(1)+'%');
+}
+function sharpeC(v){
+  if(v==null) return '';
+  const n=parseFloat(v);
+  if(n<0) return 'text-red-400';
+  if(n>=1.0) return 'text-green-400';
+  if(n>=0.5) return 'text-yellow-400';
+  return '';
+}
+</script>
+</body>
+</html>
